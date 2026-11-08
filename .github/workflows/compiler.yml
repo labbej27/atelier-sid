@@ -64,7 +64,7 @@ jobs:
             iconutil -c icns icone.iconset -o icone.icns
             echo "ATELIER_ICONE=$PWD/icone.icns" >> "$GITHUB_ENV"
           elif [ "$RUNNER_OS" = "Windows" ]; then
-            echo "ATELIER_ICONE=$PWD/icone.png" >> "$GITHUB_ENV"
+            echo "ATELIER_ICONE=icone.png" >> "$GITHUB_ENV"
           fi
 
       - name: Compilation

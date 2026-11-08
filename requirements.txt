@@ -1,5 +1,7 @@
 # Testé le 8 novembre 2026 avec Python 3.12 (python-rtmidi n'a pas encore de paquet pour 3.13+).
-PySide6-Essentials==6.12.0
+PySide6-Essentials==6.12.0; platform_machine != "aarch64"
+# Linux ARM64 : 6.12 demande glibc 2.39 ; 6.7.3 tourne dès glibc 2.31 (Raspberry Pi OS Bookworm…)
+PySide6-Essentials==6.7.3; platform_machine == "aarch64"
 pyresidfp==0.17.0
 python-rtmidi==1.5.8
 sounddevice==0.5.6
