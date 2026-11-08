@@ -1,0 +1,27 @@
+# Compile Atelier SID pour macOS, Windows et Linux, et publie les archives comme artefacts.
+name: Compiler
+on: [push, workflow_dispatch]
+jobs:
+  compiler:
+    strategy:
+      matrix:
+        os: [macos-14, windows-latest, ubuntu-22.04]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Bibliothèques Linux (audio, MIDI, Qt)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libportaudio2 libasound2-dev libegl1 libxkbcommon-x11-0 libxcb-cursor0
+      - run: pip install -r requirements.txt
+      - name: Tests
+        run: python -m pytest -q tests
+        env:
+          QT_QPA_PLATFORM: offscreen
+      - run: python -m PyInstaller --noconfirm atelier_sid.spec
+      - uses: actions/upload-artifact@v4
+        with:
+          name: atelier-sid-${{ runner.os }}
+          path: dist/
