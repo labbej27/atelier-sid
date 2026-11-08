@@ -51,6 +51,20 @@ W S X D C V G B H N J , sur un AZERTY), la rangée du haut l'octave au-dessus.
 **Batterie** : sur une piste dont l'instrument est une batterie, la note choisit le son : do =
 grosse caisse ; ré, mi = caisse claire ; fa#, sol#, la# = charleston ; fa, sol, la, si = tom.
 
+## Téléchargement
+
+Les versions compilées sont dans les [Releases](https://github.com/labbej27/atelier-sid/releases) :
+macOS (Apple Silicon), Linux (x64 et ARM64) et Windows (x64). Elles ne sont signées ni par Apple
+ni par Microsoft :
+
+- **macOS** : décompresse, glisse **Atelier SID** dans Applications. Au premier lancement, macOS
+  peut dire que l'app est « endommagée » ou d'un « développeur non identifié » : ouvre-la avec un
+  clic droit > Ouvrir, ou lance une fois `xattr -dr com.apple.quarantine "/Applications/Atelier SID.app"`.
+- **Windows** : décompresse et lance `Atelier SID.exe`. Si SmartScreen s'affiche : « Informations
+  complémentaires » > « Exécuter quand même ».
+- **Linux** : décompresse et lance `Atelier SID/Atelier SID`. Il faut PortAudio et quelques
+  bibliothèques de Qt : `sudo apt install libportaudio2 libxcb-cursor0 libxkbcommon-x11-0`.
+
 ## Installation depuis les sources
 
 Il faut Python 3.12 : python-rtmidi n'a pas encore de paquet pour les versions suivantes.
@@ -67,9 +81,10 @@ Sous Linux, il faut aussi PortAudio et ALSA : `sudo apt install libportaudio2 li
 
 - **macOS** (Apple Silicon testé) : `./compiler_mac.sh` passe les tests, compile, vérifie
   l'application obtenue et l'installe dans `/Applications`.
-- **Windows et Linux** : `python -m PyInstaller atelier_sid.spec` dans le venv. Le workflow
-  [.github/workflows/compiler.yml](.github/workflows/compiler.yml) compile les trois versions sur
-  GitHub Actions. Ces deux versions n'ont pas encore été essayées sur une vraie machine.
+- **Windows et Linux** : `python -m PyInstaller atelier_sid.spec` dans le venv.
+- **GitHub Actions** : [.github/workflows/compiler.yml](.github/workflows/compiler.yml) compile les
+  quatre versions, lance l'auto-test de chaque application compilée, et publie une version à chaque
+  étiquette `v…`.
 
 L'application n'est pas signée par Apple ni par Microsoft : au premier lancement, il faut
 l'autoriser (Réglages Système > Confidentialité et sécurité sur Mac).

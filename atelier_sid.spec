@@ -21,7 +21,7 @@ a = Analysis(["atelier_sid.py"], datas=datas, binaries=binaries, hiddenimports=h
              excludes=["tkinter", "matplotlib", "pytest"])
 pyz = PYZ(a.pure)
 exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name="Atelier SID", console=False,
-          icon=icone if icone and sys.platform != "darwin" else None)
+          icon=icone if icone and sys.platform.startswith("win") else None)
 coll = COLLECT(exe, a.binaries, a.datas, name="Atelier SID")
 if sys.platform == "darwin":
     app = BUNDLE(coll, name="Atelier SID.app", icon=icone, bundle_identifier="local.atelier-sid.app",

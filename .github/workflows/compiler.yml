@@ -1,27 +1,114 @@
-# Compile Atelier SID pour macOS, Windows et Linux, et publie les archives comme artefacts.
+# Compile Atelier SID pour macOS (Apple Silicon), Linux (x64 et ARM64) et Windows (x64).
+# Chaque application compilée passe son auto-test. Une étiquette « v… » publie une version
+# avec les quatre archives.
 name: Compiler
-on: [push, workflow_dispatch]
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
 jobs:
   compiler:
     strategy:
+      fail-fast: false
       matrix:
-        os: [macos-14, windows-latest, ubuntu-22.04]
+        include:
+          - os: macos-14
+            nom: macOS-arm64
+          - os: ubuntu-22.04
+            nom: Linux-x64
+          - os: ubuntu-22.04-arm
+            nom: Linux-arm64
+          - os: windows-latest
+            nom: Windows-x64
     runs-on: ${{ matrix.os }}
+    env:
+      QT_QPA_PLATFORM: offscreen
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
       - name: Bibliothèques Linux (audio, MIDI, Qt)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libportaudio2 libasound2-dev libegl1 libxkbcommon-x11-0 libxcb-cursor0
-      - run: pip install -r requirements.txt
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libportaudio2 libasound2 libegl1 libxkbcommon0 libxkbcommon-x11-0 \
+            libfontconfig1 libdbus-1-3 libglib2.0-0 libxcb-cursor0
+
+      - name: Dépendances
+        run: |
+          python -m pip install --upgrade pip
+          pip install --only-binary=:all: -r requirements.txt
+          pip install --only-binary=:all: pillow
+
       - name: Tests
-        run: python -m pytest -q tests
-        env:
-          QT_QPA_PLATFORM: offscreen
-      - run: python -m PyInstaller --noconfirm atelier_sid.spec
+        run: python -m pytest -q -p no:cacheprovider tests
+
+      - name: Icône
+        shell: bash
+        run: |
+          python creer_icone.py icone.png
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            mkdir icone.iconset
+            for t in 16 32 128 256 512; do
+              sips -z $t $t icone.png --out icone.iconset/icon_${t}x${t}.png >/dev/null
+              sips -z $((t*2)) $((t*2)) icone.png --out icone.iconset/icon_${t}x${t}@2x.png >/dev/null
+            done
+            iconutil -c icns icone.iconset -o icone.icns
+            echo "ATELIER_ICONE=$PWD/icone.icns" >> "$GITHUB_ENV"
+          elif [ "$RUNNER_OS" = "Windows" ]; then
+            echo "ATELIER_ICONE=$PWD/icone.png" >> "$GITHUB_ENV"
+          fi
+
+      - name: Compilation
+        run: python -m PyInstaller --noconfirm atelier_sid.spec
+
+      - name: Auto-test de l'application compilée (macOS)
+        if: runner.os == 'macOS'
+        run: '"dist/Atelier SID.app/Contents/MacOS/Atelier SID" --auto-test essai && test -s essai/test.sid'
+      - name: Auto-test de l'application compilée (Linux)
+        if: runner.os == 'Linux'
+        run: '"dist/Atelier SID/Atelier SID" --auto-test essai && test -s essai/test.sid'
+      - name: Auto-test de l'application compilée (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath "dist\Atelier SID\Atelier SID.exe" -ArgumentList "--auto-test","essai" -Wait -PassThru
+          if ($p.ExitCode -ne 0 -or -not (Test-Path essai\test.sid)) { exit 1 }
+
+      - name: Archive
+        shell: bash
+        run: |
+          mkdir paquet
+          case "$RUNNER_OS" in
+            macOS)   ditto -c -k --keepParent "dist/Atelier SID.app" "paquet/Atelier-SID-${{ matrix.nom }}.zip" ;;
+            Linux)   tar -C dist -czf "paquet/Atelier-SID-${{ matrix.nom }}.tar.gz" "Atelier SID" ;;
+            Windows) 7z a -tzip "paquet/Atelier-SID-${{ matrix.nom }}.zip" "./dist/Atelier SID" >/dev/null ;;
+          esac
       - uses: actions/upload-artifact@v4
         with:
-          name: atelier-sid-${{ runner.os }}
-          path: dist/
+          name: Atelier-SID-${{ matrix.nom }}
+          path: paquet/*
+
+  publier:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: compiler
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: paquets
+          merge-multiple: true
+      - name: Version GitHub
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" paquets/* --repo "$GITHUB_REPOSITORY" \
+            --title "Atelier SID ${GITHUB_REF_NAME#v}" --generate-notes
