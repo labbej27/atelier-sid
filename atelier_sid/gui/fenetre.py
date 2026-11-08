@@ -681,11 +681,17 @@ class Fenetre(QMainWindow):
         chemin, _ = QFileDialog.getOpenFileName(self, "Importer un fichier MIDI", self._dossier(), "MIDI (*.mid *.midi)")
         if not chemin:
             return
+        from .import_midi import ImportMidi
+
         try:
-            morceau = midi.importer(Path(chemin))
+            dialogue = ImportMidi(Path(chemin), self.morceau.nb_sid, self)
         except Exception as erreur:
             QMessageBox.warning(self, "Atelier SID", f"Import impossible : {erreur}")
             return
+        self.reglages.setValue("dossier", str(Path(chemin).parent))
+        if dialogue.exec() != dialogue.DialogCode.Accepted:
+            return
+        morceau = dialogue.morceau()
         self.chemin = None
         self.historique.clear()
         self._charger_morceau(morceau)

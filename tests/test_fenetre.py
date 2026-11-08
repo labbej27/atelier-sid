@@ -99,24 +99,46 @@ def test_enregistrer_et_rouvrir(fen, tmp_path):
     assert Morceau.ouvrir(tmp_path / "x.asid") == fen.morceau
 
 
-def test_import_midi(tmp_path):
+def test_import_midi(tmp_path, app):
     import mido
     from atelier_sid import midi
+    from atelier_sid.gui.import_midi import ImportMidi
     fichier = mido.MidiFile(ticks_per_beat=480)
-    for canal, notes in ((0, [36, 38]), (1, [72, 74, 76]), (9, [36, 38])):
-        piste = mido.MidiTrack()
-        if canal == 0:
-            piste.append(mido.MetaMessage("set_tempo", tempo=mido.bpm2tempo(100)))
-        for h in notes:
-            piste.append(mido.Message("note_on", channel=canal, note=h, velocity=90, time=0))
-            piste.append(mido.Message("note_off", channel=canal, note=h, velocity=0, time=480))
-        fichier.tracks.append(piste)
+    piste = mido.MidiTrack()
+    piste.append(mido.MetaMessage("set_tempo", tempo=mido.bpm2tempo(100)))
+    piste.append(mido.Message("program_change", channel=3, program=88, time=0))
+    evenements = []
+    for i in range(8):
+        evenements.append((i * 480, "on", 0, 36 + (i % 2) * 3))
+        evenements.append((i * 480 + 400, "off", 0, 36 + (i % 2) * 3))
+        evenements.append((i * 480, "on", 1, 72 + i))
+        evenements.append((i * 480 + 400, "off", 1, 72 + i))
+        evenements.append((i * 480, "on", 9, 36 if i % 2 == 0 else 38))
+        evenements.append((i * 480 + 100, "off", 9, 36 if i % 2 == 0 else 38))
+        for h in (60, 64, 67):  # accord, canal 4
+            evenements.append((i * 480, "on", 3, h))
+            evenements.append((i * 480 + 450, "off", 3, h))
+    t = 0
+    for instant, sens, canal, h in sorted(evenements, key=lambda e: (e[0], e[1] == "on")):
+        piste.append(mido.Message("note_on" if sens == "on" else "note_off", channel=canal, note=h,
+                                  velocity=90 if sens == "on" else 0, time=instant - t))
+        t = instant
+    fichier.tracks.append(piste)
     fichier.save(str(tmp_path / "a.mid"))
+
     m = midi.importer(tmp_path / "a.mid")
-    assert m.tempo == 100
-    assert [n.hauteur for n in m.pistes[0].notes] == [36, 38]
-    assert [n.hauteur for n in m.pistes[1].notes] == [72, 74, 76]
-    assert m.pistes[2].instrument.batterie and len(m.pistes[2].notes) == 2
+    assert m.tempo == 100 and m.nb_sid == 2
+    assert [n.hauteur for n in m.pistes[0].notes][:2] == [36, 39]  # basse
+    assert m.pistes[1].notes[0].hauteur == 72  # mélodie
+    assert m.pistes[2].instrument.batterie and len(m.pistes[2].notes) == 8
+    assert m.pistes[3].notes[0].hauteur == 67 and m.pistes[3].notes[0].autres == [60, 64]  # arpège
+    assert m.pistes[0].instrument.nom == "Basse" and m.pistes[3].instrument.nom == "Nappe"
+
+    d = ImportMidi(tmp_path / "a.mid", 1)
+    assert d.voix[[p.canal for p in d.parties].index(3)].currentData() is None  # 1 SID : pas de place
+    d.nb_sid.setCurrentIndex(1)
+    assert d.voix[[p.canal for p in d.parties].index(3)].currentData() == 3
+    assert d.morceau().pistes[3].notes[0].autres == [60, 64]
 
 
 def test_passer_a_deux_sid_et_infos(fen):

@@ -24,7 +24,8 @@ FIN_MEMOIRE = 0xD000
 TRAMES_PAR_S = 50
 DUREE_MAX = 255
 
-REPOS, LIEE, FIN = 0x60, 0x65, 0xFF
+REPOS, ARPEGE, LIEE, FIN = 0x60, 0x61, 0x65, 0xFF
+ARPEGE_MAX = 4  # notes d'un accord (4 places par voix dans le lecteur)
 BATTERIE = 0x70
 NOTE_MIN, NOTE_MAX = 12, 12 + 0x5F  # C0 à B7
 
@@ -83,6 +84,10 @@ def flux_piste(morceau: Morceau, piste: Piste, debut: float = 0.0, ignorer: bool
             h = hauteur_sid(note.hauteur)
             if piste.instrument.batterie:
                 ajouter(bytes([BATTERIE + SON_DE_LA_NOTE[note.hauteur % 12]]), f - d, bytes([REPOS]))
+            elif note.autres:
+                accord = sorted({hauteur_sid(x) for x in [note.hauteur, *note.autres]})[-ARPEGE_MAX:]
+                commande = bytes([ARPEGE, len(accord), *accord])
+                ajouter(commande, f - d, commande)
             else:
                 debut_note = bytes([LIEE, h]) if tronquee else bytes([h])
                 ajouter(debut_note, f - d, bytes([LIEE, h]))

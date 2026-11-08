@@ -145,12 +145,18 @@ class PianoRoll(QAbstractScrollArea):
         couleur = COULEURS_VOIX[self.voix]
         p.setFont(QFont(p.font().family(), 8))
         for n in self.morceau.pistes[self.voix].notes:
+            for autre in n.autres:  # accord joué en arpège : notes en pointillé
+                r = QRectF(self.x_de(n.debut), self.y_de(autre) + 2, max(3.0, n.duree * self.px_temps), LIGNE - 4)
+                p.setPen(QPen(couleur, 1, Qt.PenStyle.DashLine))
+                p.setBrush(Qt.BrushStyle.NoBrush)
+                p.drawRect(r)
             r = self._rect(n)
             p.fillRect(r, couleur.lighter(140) if n is self.selection else couleur)
             p.setPen(QColor("#0d0e11"))
             p.drawRect(r)
             if r.width() > 28:
-                p.drawText(r.adjusted(3, 0, 0, 0), Qt.AlignmentFlag.AlignVCenter, nom_note(n.hauteur))
+                texte = nom_note(n.hauteur) + (" + accord" if n.autres and r.width() > 80 else "")
+                p.drawText(r.adjusted(3, 0, 0, 0), Qt.AlignmentFlag.AlignVCenter, texte)
 
         # tête de lecture et curseur de départ
         for temps, couleur in ((self.curseur, QColor("#e0e0e0")), (self.position, QColor("#ff5a5a"))):
@@ -261,6 +267,7 @@ class PianoRoll(QAbstractScrollArea):
             note.debut = min(max(0.0, debut if libre else self.caler(debut)), self.morceau.duree - self.grille)
             hauteur = min(HAUTE, max(BASSE, self.hauteur_de(pos.y())))
             if hauteur != note.hauteur:
+                note.autres = [a + hauteur - note.hauteur for a in note.autres]  # l'accord suit
                 note.hauteur = hauteur
                 self.note_ecoutee.emit(hauteur)
         self.viewport().update()

@@ -181,3 +181,18 @@ def test_reduire_les_sid():
     m.regler_nb_sid(3)
     m.regler_nb_sid(1)
     assert len(m.pistes) == 3 and len(m.filtres) == 1
+
+
+def test_accord_en_arpege():
+    m = Morceau(tempo=150, mesures=1)
+    m.pistes[1].notes = [Note(0, 2, 60, [64, 67])]
+    assert export.flux_piste(m, m.pistes[1])[:6] == bytes([0x61, 3, 48, 52, 55, 40])
+    frequences = [ligne[1][0] for ligne in journal(m, 12)]
+    attendues = [moteur.frequence_sid(h) for h in (60, 64, 67)]
+    assert frequences[:6] == attendues * 2  # une note de l'accord par trame
+
+
+def test_batterie_caisse_claire_avant_grosse_caisse():
+    from atelier_sid.modele import PREREGLAGES
+    p = Piste("b", PREREGLAGES["Batterie"](), [Note(0, 0.5, 36), Note(0, 0.5, 39), Note(1, 0.5, 36)])
+    assert [n.hauteur for n in p.notes_triees()] == [39, 36]

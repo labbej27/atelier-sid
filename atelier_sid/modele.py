@@ -21,6 +21,8 @@ BATTERIE = ("grosse caisse", "caisse claire", "charleston", "tom")
 # do = grosse caisse ; ré, mi = caisse claire ; fa#, sol#, la# = charleston ; fa, sol, la, si = tom.
 SON_DE_LA_NOTE = {0: 0, 1: 1, 2: 1, 3: 1, 4: 1, 5: 3, 6: 2, 7: 3, 8: 2, 9: 3, 10: 2, 11: 3}
 
+PRIORITE_BATTERIE = {1: 0, 0: 1, 3: 2, 2: 3}  # caisse claire, grosse caisse, tom, charleston
+
 VERSION_FICHIER = 2
 MAX_SID = 3  # SID 1 en $D400, SID 2 en $D420, SID 3 en $D440
 ADRESSES_SID = (0xD400, 0xD420, 0xD440)
@@ -66,6 +68,7 @@ class Note:
     debut: float  # en noires
     duree: float
     hauteur: int  # numéro MIDI
+    autres: list[int] = field(default_factory=list)  # accord : notes jouées en arpège avec la hauteur
 
 
 @dataclass
@@ -76,15 +79,26 @@ class Piste:
     muette: bool = False
 
     def notes_triees(self) -> list[Note]:
-        """Notes dans l'ordre, sans chevauchement : une voix du SID ne joue qu'une note."""
-        notes = sorted((n for n in self.notes if n.duree > 0), key=lambda n: (n.debut, -n.hauteur))
+        """Notes dans l'ordre, sans chevauchement : une voix du SID ne joue qu'une note.
+
+        Deux notes au même instant : la plus aiguë l'emporte ; à la batterie, la caisse
+        claire passe avant la grosse caisse, puis le tom et le charleston.
+        """
+        if self.instrument.batterie:
+            def priorite(n):
+                return PRIORITE_BATTERIE[SON_DE_LA_NOTE[n.hauteur % 12]]
+        else:
+            def priorite(n):
+                return -n.hauteur
+        notes = sorted((n for n in self.notes if n.duree > 0), key=lambda n: (n.debut, priorite(n)))
         propres: list[Note] = []
         for note in notes:
             if propres and propres[-1].debut == note.debut:
-                continue  # deux notes au même instant : on garde la plus aiguë
+                continue
             if propres and propres[-1].debut + propres[-1].duree > note.debut:
                 precedente = propres[-1]
-                propres[-1] = Note(precedente.debut, note.debut - precedente.debut, precedente.hauteur)
+                propres[-1] = Note(precedente.debut, note.debut - precedente.debut, precedente.hauteur,
+                                   list(precedente.autres))
             propres.append(note)
         return propres
 
