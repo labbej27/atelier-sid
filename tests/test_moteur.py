@@ -130,8 +130,17 @@ def test_deux_sid_voix_4_sur_le_second(tmp_path):
     assert (ecrits[0xD421] << 8 | ecrits[0xD420]) == f and ecrits[0xD424] & 1  # voix 4 = voix 1 du SID 2
     assert ecrits[0xD416] == 1024 >> 3 and ecrits[0xD436] == 1500 >> 3  # un filtre par SID
     assert ecrits[0xD438] & 15 == 15 and ecrits[0xD418] & 15 == 15
-    son = emu.echantillons()
-    assert son.shape == (960, 2) and abs(son[:, 1]).max() > abs(son[:, 0]).max()  # SID 2 à droite
+    son = []
+    for _ in range(25):  # une demi-seconde : le clic du réglage de volume ne compte plus
+        emu.trame()
+        son.append(emu.echantillons())
+    son = np.concatenate(son).astype(float)
+    assert son.shape == (25 * 960, 2)
+    # Différence d'un échantillon à l'autre : on ne garde que les aigus. Au repos, le 6581 dérive
+    # lentement après le réglage du volume, ce qui compterait sinon comme du son.
+    son = np.diff(son[4800:], axis=0)
+    gauche, droite = np.sqrt(np.mean(son ** 2, axis=0))
+    assert droite > 3 * gauche  # SID 2 à droite
     export.ecrire_sid(m, tmp_path / "a.sid")
     entete = (tmp_path / "a.sid").read_bytes()
     assert struct.unpack(">H", entete[4:6])[0] == 3 and entete[0x7A] == 0x42 and entete[0x7B] == 0
