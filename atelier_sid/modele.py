@@ -21,7 +21,9 @@ BATTERIE = ("grosse caisse", "caisse claire", "charleston", "tom")
 # do = grosse caisse ; ré, mi = caisse claire ; fa#, sol#, la# = charleston ; fa, sol, la, si = tom.
 SON_DE_LA_NOTE = {0: 0, 1: 1, 2: 1, 3: 1, 4: 1, 5: 3, 6: 2, 7: 3, 8: 2, 9: 3, 10: 2, 11: 3}
 
-VERSION_FICHIER = 1
+VERSION_FICHIER = 2
+MAX_SID = 3  # SID 1 en $D400, SID 2 en $D420, SID 3 en $D440
+ADRESSES_SID = (0xD400, 0xD420, 0xD440)
 
 
 @dataclass
@@ -88,16 +90,23 @@ class Piste:
 
 
 @dataclass
+class Filtre:
+    """Le filtre d'une puce SID, partagé par celles de ses trois voix qui y passent."""
+    type: str = "passe-bas"
+    coupure: int = 1024  # 0 à 2047
+    resonance: int = 4  # 0 à 15
+
+
+@dataclass
 class Morceau:
     titre: str = "Sans titre"
     auteur: str = ""
+    publie: str = ""  # champ « released » des .sid : année, groupe…
     tempo: float = 120.0
     mesures: int = 8
     temps_par_mesure: int = 4
     pistes: list[Piste] = field(default_factory=list)
-    filtre_type: str = "passe-bas"
-    filtre_coupure: int = 1024  # 0 à 2047
-    filtre_resonance: int = 4  # 0 à 15
+    filtres: list[Filtre] = field(default_factory=list)
     volume: int = 15
 
     def __post_init__(self):
@@ -107,6 +116,24 @@ class Morceau:
                 Piste("Voix 2", PREREGLAGES["Mélodie"]()),
                 Piste("Voix 3", PREREGLAGES["Batterie"]()),
             ]
+        if not self.filtres:
+            self.filtres = [Filtre() for _ in range(self.nb_sid)]
+
+    @property
+    def nb_sid(self) -> int:
+        return max(1, min(MAX_SID, (len(self.pistes) + 2) // 3))
+
+    def regler_nb_sid(self, nb: int) -> None:
+        """Ajoute ou retire des puces SID : trois voix et un filtre par puce."""
+        nb = max(1, min(MAX_SID, nb))
+        while len(self.pistes) < 3 * nb:
+            voix = len(self.pistes)
+            nom = ("Basse", "Mélodie", "Nappe")[voix % 3]
+            self.pistes.append(Piste(f"Voix {voix + 1}", PREREGLAGES[nom]()))
+        del self.pistes[3 * nb:]
+        while len(self.filtres) < nb:
+            self.filtres.append(Filtre())
+        del self.filtres[nb:]
 
     @property
     def duree(self) -> float:
@@ -131,13 +158,18 @@ class Morceau:
     def depuis_dict(cls, donnees: dict) -> "Morceau":
         if donnees.get("format") != "atelier-sid":
             raise ValueError("Ce fichier n'est pas un morceau d'Atelier SID.")
-        champs = {k: v for k, v in donnees.items() if k in cls.__dataclass_fields__ and k != "pistes"}
+        champs = {k: v for k, v in donnees.items() if k in cls.__dataclass_fields__ and k not in ("pistes", "filtres")}
+        if "filtres" in donnees:
+            filtres = [Filtre(**f) for f in donnees["filtres"]]
+        else:  # version 1 : un seul filtre
+            filtres = [Filtre(donnees.get("filtre_type", "passe-bas"), donnees.get("filtre_coupure", 1024),
+                              donnees.get("filtre_resonance", 4))]
         pistes = []
         for p in donnees["pistes"]:
             instrument = Instrument(**{k: v for k, v in p["instrument"].items() if k in Instrument.__dataclass_fields__})
             notes = [Note(**n) for n in p.get("notes", [])]
             pistes.append(Piste(p.get("nom", "Voix"), instrument, notes, p.get("muette", False)))
-        return cls(**champs, pistes=pistes)
+        return cls(**champs, pistes=pistes[:3 * MAX_SID], filtres=filtres)
 
     @classmethod
     def ouvrir(cls, chemin: Path) -> "Morceau":

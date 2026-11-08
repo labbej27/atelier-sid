@@ -42,22 +42,37 @@ def frequence_sid(hauteur: int) -> int:
     return min(65535, round(440.0 * 2 ** ((h - 69) / 12) * 16777216 / 985248))
 
 
-class C64Sid:
-    """Un 6502 et un SID émulés, reliés par les registres $D400-$D418."""
+# Registre de base de chaque voix (comme la table « decal » du lecteur 6502)
+DECAL = [0, 7, 14, 0x20, 0x27, 0x2E, 0x40, 0x47, 0x4E]
+# Place de chaque SID dans la stéréo (gauche, droite) : 1 SID au centre ; 2 SID à gauche et à
+# droite, comme les morceaux « stéréo SID » ; le 3e au centre.
+PANORAMIQUE = {1: [(1.0, 1.0)], 2: [(1.0, 0.15), (0.15, 1.0)], 3: [(1.0, 0.15), (0.15, 1.0), (0.6, 0.6)]}
 
-    def __init__(self, puce: str = "6581"):
+
+class C64Sid:
+    """Un 6502 et jusqu'à trois SID émulés ($D400, $D420, $D440), reliés par leurs registres."""
+
+    def __init__(self, puce: str = "6581", nb_sid: int = 1):
         modele = ChipModel.MOS8580 if puce == "8580" else ChipModel.MOS6581
-        self.sid = SoundInterfaceDevice(model=modele, sampling_frequency=FREQ_ECH)
+        self.sids = [SoundInterfaceDevice(model=modele, sampling_frequency=FREQ_ECH) for _ in range(3)]
+        self.nb_sid = nb_sid
         self.memoire = ObservableMemory()
-        self.memoire.subscribe_to_write(range(SID, SID + 25), self._ecriture_sid)
+        for s in range(3):
+            self.memoire.subscribe_to_write(range(SID + 0x20 * s, SID + 0x20 * s + 25), self._ecriture_sid)
         self.cpu = MPU(memory=self.memoire)
         self.charge = False
-        self._reste = np.zeros(0, dtype=np.int32)
+        self._reste = np.zeros((0, 2), dtype=np.int32)
+
+    @property
+    def sid(self):
+        return self.sids[0]
 
     def _ecriture_sid(self, adresse: int, valeur: int):
-        self.sid.write_register(WritableRegister(adresse - SID), valeur & 0xFF)
+        s, registre = divmod(adresse - SID, 0x20)
+        self.sids[s].write_register(WritableRegister(registre), valeur & 0xFF)
 
     def ecrire(self, registre: int, valeur: int) -> None:
+        """registre : décalage depuis $D400 (0x20 de plus par SID)."""
         self.memoire[SID + registre] = valeur & 0xFF
 
     def appeler(self, adresse: int, a: int = 0, x: int = 0) -> None:
@@ -73,8 +88,11 @@ class C64Sid:
             cpu.step()
         raise RuntimeError(f"Le lecteur 6502 ne rend pas la main (appel ${adresse:04X}).")
 
-    def charger(self, image: bytes) -> None:
-        self.sid.reset()
+    def charger(self, image: bytes, nb_sid: int | None = None) -> None:
+        if nb_sid is not None:
+            self.nb_sid = nb_sid
+        for sid in self.sids:
+            sid.reset()
         self.memoire[export.ADRESSE:export.ADRESSE + len(image)] = list(image)
         self.appeler(export.ADRESSE)
         self.charge = True
@@ -84,9 +102,17 @@ class C64Sid:
             self.appeler(export.ADRESSE + 3)
 
     def echantillons(self) -> np.ndarray:
-        """Exactement une trame de son (960 échantillons) : reSID en donne parfois un de plus."""
-        while self._reste.size < ECH_PAR_TRAME:
-            self._reste = np.concatenate((self._reste, np.asarray(self.sid.clock(DUREE_TRAME), dtype=np.int32)))
+        """Exactement une trame de son stéréo (960 × 2) : reSID en donne parfois un de plus."""
+        while len(self._reste) < ECH_PAR_TRAME:
+            sons = [np.asarray(sid.clock(DUREE_TRAME), dtype=np.float64) for sid in self.sids[:self.nb_sid]]
+            n = min(s.size for s in sons)
+            stereo = np.zeros((n, 2))
+            gains = PANORAMIQUE[self.nb_sid]
+            for son, (g, d) in zip(sons, gains):
+                stereo[:, 0] += son[:n] * g
+                stereo[:, 1] += son[:n] * d
+            stereo /= np.array([sum(g for g, _ in gains), sum(d for _, d in gains)])  # pas de saturation
+            self._reste = np.concatenate((self._reste, stereo.astype(np.int32)))
         son, self._reste = self._reste[:ECH_PAR_TRAME], self._reste[ECH_PAR_TRAME:]
         return son
 
@@ -106,10 +132,10 @@ class Moteur:
         self.boucle = False
         self.metronome = False
         self.flux_audio = None
-        self.tampon = np.zeros(0, dtype=np.int16)
+        self.tampon = np.zeros((0, 2), dtype=np.int16)
         self.direct = collections.deque()
         self.batterie_directe: dict[int, list] = {}
-        self.ondes = [0x40, 0x40, 0x40]
+        self.ondes = [0x40] * 9
         self.clics = {True: self._clic(1760.0, 9000), False: self._clic(1175.0, 6000)}
         self.a_la_fin = None  # rappel quand la lecture s'arrête seule
         self._reste_clic = np.zeros(0, dtype=np.int32)
@@ -125,7 +151,7 @@ class Moteur:
         import sounddevice as sd
 
         self.flux_audio = sd.OutputStream(
-            samplerate=FREQ_ECH, channels=1, dtype="int16", blocksize=ECH_PAR_TRAME,
+            samplerate=FREQ_ECH, channels=2, dtype="int16", blocksize=ECH_PAR_TRAME,
             latency="low", callback=self._rappel,
         )
         self.flux_audio.start()
@@ -141,9 +167,9 @@ class Moteur:
         return float(self.flux_audio.latency) if self.flux_audio is not None else 0.0
 
     def _rappel(self, sortie, nb, _temps, _etat) -> None:
-        while self.tampon.size < nb:
+        while len(self.tampon) < nb:
             self.tampon = np.concatenate((self.tampon, self.generer_trame()))
-        sortie[:, 0] = self.tampon[:nb]
+        sortie[:] = self.tampon[:nb]
         self.tampon = self.tampon[nb:]
 
     def generer_trame(self) -> np.ndarray:
@@ -175,17 +201,17 @@ class Moteur:
     def _metronome(self, son: np.ndarray, avant: float) -> None:
         """Ajoute un clic à chaque temps, plus fort au premier temps de la mesure."""
         if self._reste_clic.size:
-            n = min(self._reste_clic.size, son.size)
-            son[:n] += self._reste_clic[:n]
+            n = min(self._reste_clic.size, len(son))
+            son[:n] += self._reste_clic[:n, None]
             self._reste_clic = self._reste_clic[n:]
         pas = self.tempo / 60.0 / export.TRAMES_PAR_S
         temps = math.ceil(avant - 1e-9)
         if temps >= avant + pas:
             return
-        decalage = min(son.size - 1, int((temps - avant) / pas * son.size))
+        decalage = min(len(son) - 1, int((temps - avant) / pas * len(son)))
         clic = self.clics[round(temps) % self.temps_par_mesure == 0]
-        n = min(clic.size, son.size - decalage)
-        son[decalage:decalage + n] += clic[:n]
+        n = min(clic.size, len(son) - decalage)
+        son[decalage:decalage + n] += clic[:n, None]
         self._reste_clic = clic[n:]
 
     # --- Transport ---
@@ -197,7 +223,7 @@ class Moteur:
     def position_entendue(self) -> float:
         """Position de ce qu'on entend : la sortie audio a un peu de retard."""
         with self.verrou:
-            retard = (self.latence + self.tampon.size / FREQ_ECH) * self.tempo / 60.0
+            retard = (self.latence + len(self.tampon) / FREQ_ECH) * self.tempo / 60.0
             return self.position() - retard
 
     def jouer(self, morceau: Morceau, debut: float = 0.0, ignorer: int | None = None,
@@ -205,8 +231,8 @@ class Moteur:
         """Lance la lecture à `debut` (en noires), après `decompte` mesures de métronome."""
         image = export.image(morceau, debut, ignorer)
         with self.verrou:
-            self.emu.charger(image)
-            self.ondes = [p.instrument.octets()[0] for p in morceau.pistes[:3]]
+            self.emu.charger(image, morceau.nb_sid)
+            self.ondes = [p.instrument.octets()[0] for p in morceau.pistes] + [0x40] * (9 - len(morceau.pistes))
             self.tempo = morceau.tempo
             self.temps_par_mesure = morceau.temps_par_mesure
             self.debut = debut
@@ -222,8 +248,8 @@ class Moteur:
             self._silence()
 
     def _silence(self) -> None:
-        for voix in range(3):
-            self.emu.ecrire(7 * voix + 4, self.ondes[voix] & 0xFE)
+        for voix in range(3 * self.emu.nb_sid):
+            self.emu.ecrire(DECAL[voix] + 4, self.ondes[voix] & 0xFE)
 
     # --- Réglages pendant le jeu ---
 
@@ -233,24 +259,25 @@ class Moteur:
         base = export.ETIQUETTES["instruments"] + 8 * voix
         with self.verrou:
             self.ondes[voix] = octets[0]
-            if not self.emu.charge:
-                self.emu.charger(export.image(morceau))
+            if not self.emu.charge or self.emu.nb_sid != morceau.nb_sid:
+                self.emu.charger(export.image(morceau), morceau.nb_sid)
             for i, b in enumerate(octets):
                 self.emu.memoire[base + i] = b
             self.emu.appeler(export.ETIQUETTES["charger_instr"], a=voix, x=voix)
             self.appliquer_filtre(morceau)
 
     def appliquer_filtre(self, morceau: Morceau) -> None:
-        octets = export.octets_filtre(morceau)
         with self.verrou:
-            if not self.emu.charge:
-                self.emu.charger(export.image(morceau))
-            base = export.ETIQUETTES["filtre"]
-            for i, b in enumerate(octets):
-                self.emu.memoire[base + i] = b
-            self.emu.ecrire(0x15, octets[0])
-            self.emu.ecrire(0x16, octets[1])
-            self.emu.ecrire(0x18, octets[3])
+            if not self.emu.charge or self.emu.nb_sid != morceau.nb_sid:
+                self.emu.charger(export.image(morceau), morceau.nb_sid)
+            for s, filtre in enumerate(morceau.filtres[:morceau.nb_sid]):
+                octets = export.octets_filtre(morceau, filtre)
+                base = export.ETIQUETTES["filtre"] + 4 * s
+                for i, b in enumerate(octets):
+                    self.emu.memoire[base + i] = b
+                self.emu.ecrire(0x20 * s + 0x15, octets[0])
+                self.emu.ecrire(0x20 * s + 0x16, octets[1])
+                self.emu.ecrire(0x20 * s + 0x18, octets[3])
             self.emu.appeler(export.ETIQUETTES["routage"], x=0)
 
     # --- Jeu en direct ---
@@ -259,7 +286,7 @@ class Moteur:
         octets = instrument.octets()
 
         def jouer():
-            r = 7 * voix
+            r = DECAL[voix]
             if instrument.batterie:
                 self.emu.ecrire(r + 5, octets[1])
                 self.emu.ecrire(r + 6, octets[2])
@@ -281,7 +308,7 @@ class Moteur:
             return
 
         def relacher():
-            self.emu.ecrire(7 * voix + 4, self.ondes[voix] & 0xFE)
+            self.emu.ecrire(DECAL[voix] + 4, self.ondes[voix] & 0xFE)
 
         self.direct.append(relacher)
 
@@ -291,7 +318,7 @@ class Moteur:
             if pas >= 5:
                 del self.batterie_directe[voix]
                 continue
-            r = 7 * voix
+            r = DECAL[voix]
             if pas == 0:
                 self.emu.ecrire(r + 4, 0)
             self.emu.ecrire(r + 1, BATT_FRQ[son][pas])
@@ -302,7 +329,7 @@ class Moteur:
 
 def rendre_wav(morceau: Morceau, chemin: Path, puce: str = "6581", tours: int = 1) -> None:
     """Joue le morceau hors temps réel et l'écrit en WAV (48 kHz, 16 bits, mono)."""
-    emu = C64Sid(puce)
+    emu = C64Sid(puce, morceau.nb_sid)
     emu.charger(export.image(morceau))
     nb = export.trame(morceau, morceau.duree) * tours
     morceaux = []
@@ -313,7 +340,7 @@ def rendre_wav(morceau: Morceau, chemin: Path, puce: str = "6581", tours: int = 
         morceaux.append(emu.echantillons())
     son = np.clip(np.concatenate(morceaux), -32768, 32767).astype("<i2")
     with wave.open(str(chemin), "wb") as fichier:
-        fichier.setnchannels(1)
+        fichier.setnchannels(2)
         fichier.setsampwidth(2)
         fichier.setframerate(FREQ_ECH)
         fichier.writeframes(son.tobytes())

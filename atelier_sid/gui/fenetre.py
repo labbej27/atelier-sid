@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
 )
 
 from .. import export, midi, moteur
-from ..modele import FILTRES, Morceau, Note
+from ..modele import FILTRES, MAX_SID, Morceau, Note
 from .instrument import EditeurInstrument
 from .pianoroll import COULEURS_VOIX, PianoRoll
 
@@ -40,15 +40,19 @@ class LignePiste(QFrame):
         self.voix = voix
         self.setFrameShape(QFrame.Shape.StyledPanel)
         ligne = QHBoxLayout(self)
-        ligne.setContentsMargins(6, 4, 6, 4)
+        ligne.setContentsMargins(6, 1, 6, 1)
         pastille = QLabel()
-        pastille.setFixedSize(10, 28)
+        pastille.setFixedSize(10, 20)
         pastille.setStyleSheet(f"background: {COULEURS_VOIX[voix].name()}; border-radius: 3px;")
         ligne.addWidget(pastille)
         self.bouton = QRadioButton(f"Voix {voix + 1}")
+        self.bouton.setMinimumWidth(70)
+        sid = QLabel(f"SID {voix // 3 + 1}")
+        sid.setStyleSheet("color: gray; font-size: 10px;")
         groupe.addButton(self.bouton, voix)
         self.bouton.toggled.connect(lambda actif: actif and self.choisie.emit(self.voix))
         ligne.addWidget(self.bouton)
+        ligne.addWidget(sid)
         self.instrument = QLabel()
         self.instrument.setStyleSheet("color: gray;")
         ligne.addWidget(self.instrument, 1)
@@ -170,13 +174,10 @@ class Fenetre(QMainWindow):
         colonne = QVBoxLayout(centre)
         colonne.setContentsMargins(6, 6, 6, 6)
         self.groupe_voix = QButtonGroup(self)
-        self.lignes = []
-        for voix in range(3):
-            ligne = LignePiste(voix, self.groupe_voix)
-            ligne.choisie.connect(self.choisir_voix)
-            ligne.muette.connect(self._muette)
-            self.lignes.append(ligne)
-            colonne.addWidget(ligne)
+        self.lignes: list[LignePiste] = []
+        self.zone_pistes = QVBoxLayout()
+        self.zone_pistes.setSpacing(2)
+        colonne.addLayout(self.zone_pistes)
         self.roll = PianoRoll()
         self.roll.avant_modif.connect(self.memoriser)
         self.roll.modifie.connect(self._notes_modifiees)
@@ -192,6 +193,7 @@ class Fenetre(QMainWindow):
         # droite : instrument, filtre, morceau
         droite = QWidget()
         cote = QVBoxLayout(droite)
+        cote.addWidget(self._groupe_morceau())
         self.titre_instrument = QLabel()
         self.titre_instrument.setStyleSheet("font-weight: bold; font-size: 14px;")
         cote.addWidget(self.titre_instrument)
@@ -199,7 +201,8 @@ class Fenetre(QMainWindow):
         self.editeur.change.connect(self._instrument_change)
         cote.addWidget(self.editeur)
 
-        filtre = QGroupBox("Filtre (commun aux voix qui y passent)")
+        filtre = QGroupBox()
+        self.groupe_filtre = filtre
         formu = QFormLayout(filtre)
         self.filtre_type = QComboBox()
         self.filtre_type.addItems(list(FILTRES))
@@ -215,21 +218,6 @@ class Fenetre(QMainWindow):
         formu.addRow("Résonance", self.filtre_resonance)
         cote.addWidget(filtre)
 
-        infos = QGroupBox("Morceau")
-        formu = QFormLayout(infos)
-        self.champ_titre = QLineEdit()
-        self.champ_titre.textEdited.connect(lambda t: setattr(self.morceau, "titre", t))
-        self.champ_auteur = QLineEdit()
-        self.champ_auteur.textEdited.connect(lambda t: setattr(self.morceau, "auteur", t))
-        self.puce = QComboBox()
-        self.puce.addItems(["6581", "8580"])
-        self.puce.setCurrentText(str(self.reglages.value("puce", "6581")))
-        self.puce.setToolTip("Le modèle de SID émulé. Le filtre sonne très différemment de l'un à l'autre.")
-        self.puce.currentTextChanged.connect(self._puce_change)
-        formu.addRow("Titre", self.champ_titre)
-        formu.addRow("Auteur", self.champ_auteur)
-        formu.addRow("Puce SID", self.puce)
-        cote.addWidget(infos)
 
         defilement = QScrollArea()
         defilement.setWidget(droite)
@@ -280,6 +268,73 @@ class Fenetre(QMainWindow):
         a.triggered.connect(self.aide)
         aide.addAction(a)
 
+    def _groupe_morceau(self) -> QGroupBox:
+        infos = QGroupBox("Morceau")
+        formu = QFormLayout(infos)
+        self.champs_infos = {}
+        for cle, nom, aide in (
+            ("titre", "Titre", "Affiché par les lecteurs SID et sur l'écran du C64"),
+            ("auteur", "Auteur", "Ton nom ou pseudo"),
+            ("publie", "Publié", "Année et groupe, par exemple « 2026 LABBEJ27 »"),
+        ):
+            champ = QLineEdit()
+            champ.setMaxLength(32)  # taille des champs d'un .sid
+            champ.setToolTip(aide + " · 32 caractères au plus, sans accents dans le .sid")
+            champ.setPlaceholderText(aide)
+            champ.textEdited.connect(lambda texte, cle=cle: self._info_change(cle, texte))
+            self.champs_infos[cle] = champ
+            formu.addRow(nom, champ)
+        self.nb_sid = QComboBox()
+        self.nb_sid.addItems(["1 SID · 3 voix", "2 SID · 6 voix (stéréo)", "3 SID · 9 voix"])
+        self.nb_sid.setToolTip("SID 1 en $D400, SID 2 en $D420, SID 3 en $D440.\n"
+                               "Sur un C64 Ultimate : réglages « SID Addressing ».")
+        self.nb_sid.activated.connect(self._nb_sid_change)
+        formu.addRow("Puces", self.nb_sid)
+        self.puce = QComboBox()
+        self.puce.addItems(["6581", "8580"])
+        self.puce.setCurrentText(str(self.reglages.value("puce", "6581")))
+        self.puce.setToolTip("Le modèle de SID émulé. Le filtre sonne très différemment de l'un à l'autre.")
+        self.puce.currentTextChanged.connect(self._puce_change)
+        formu.addRow("Modèle", self.puce)
+        return infos
+
+    def _info_change(self, cle: str, texte: str) -> None:
+        setattr(self.morceau, cle, texte)
+        self._maj_titre(modifie=True)
+
+    def _construire_pistes(self) -> None:
+        for ligne in self.lignes:
+            self.groupe_voix.removeButton(ligne.bouton)
+            ligne.setParent(None)
+            ligne.deleteLater()
+        self.lignes = []
+        for voix in range(len(self.morceau.pistes)):
+            ligne = LignePiste(voix, self.groupe_voix)
+            ligne.choisie.connect(self.choisir_voix)
+            ligne.muette.connect(self._muette)
+            ligne.definir(self.morceau.pistes[voix])
+            self.lignes.append(ligne)
+            self.zone_pistes.addWidget(ligne)
+
+    def _nb_sid_change(self, index: int) -> None:
+        nb = index + 1
+        if nb == self.morceau.nb_sid:
+            return
+        retirees = [p for p in self.morceau.pistes[3 * nb:] if p.notes]
+        if retirees:
+            reponse = QMessageBox.question(
+                self, "Atelier SID", f"Les voix {3 * nb + 1} à {len(self.morceau.pistes)} seront supprimées, "
+                "avec leurs notes. Continuer ?")
+            if reponse != QMessageBox.StandardButton.Yes:
+                self.nb_sid.setCurrentIndex(self.morceau.nb_sid - 1)
+                return
+        self.memoriser()
+        morceau = self.morceau.copie()
+        morceau.regler_nb_sid(nb)
+        self.voix = min(self.voix, 3 * nb - 1)
+        self._charger_morceau(morceau)
+        self._maj_titre(modifie=True)
+
     # --- Morceau ---
 
     def _charger_morceau(self, morceau: Morceau) -> None:
@@ -289,22 +344,15 @@ class Fenetre(QMainWindow):
             widget.blockSignals(True)
             widget.setValue(valeur)
             widget.blockSignals(False)
-        self.champ_titre.setText(morceau.titre)
-        self.champ_auteur.setText(morceau.auteur)
-        for widget in (self.filtre_type, self.filtre_coupure, self.filtre_resonance):
-            widget.blockSignals(True)
-        self.filtre_type.setCurrentText(morceau.filtre_type)
-        self.filtre_coupure.setValue(morceau.filtre_coupure)
-        self.filtre_resonance.setValue(morceau.filtre_resonance)
-        for widget in (self.filtre_type, self.filtre_coupure, self.filtre_resonance):
-            widget.blockSignals(False)
-        for ligne, piste in zip(self.lignes, morceau.pistes):
-            ligne.definir(piste)
+        for cle, champ in self.champs_infos.items():
+            champ.setText(getattr(morceau, cle))
+        self.nb_sid.setCurrentIndex(morceau.nb_sid - 1)
+        self._construire_pistes()
         self.roll.curseur = 0.0
         self.roll.grille = GRILLES[self.grille.currentText()]
+        self.voix = min(self.voix, len(morceau.pistes) - 1)
         self.choisir_voix(self.voix)
-        self.lignes[self.voix].bouton.setChecked(True)
-        for voix in range(3):
+        for voix in range(len(morceau.pistes)):
             self.moteur.appliquer_instrument(morceau, voix)
         self._maj_titre()
 
@@ -319,6 +367,22 @@ class Fenetre(QMainWindow):
         self.titre_instrument.setText(f"Voix {voix + 1} : {piste.instrument.nom}")
         self.editeur.definir(piste.instrument)
         self.roll.definir(self.morceau, voix)
+        self._afficher_filtre()
+
+    def _afficher_filtre(self) -> None:
+        sid = self.voix // 3
+        filtre = self.morceau.filtres[sid]
+        if self.morceau.nb_sid > 1:
+            self.groupe_filtre.setTitle(f"Filtre du SID {sid + 1} (voix {3 * sid + 1} à {3 * sid + 3})")
+        else:
+            self.groupe_filtre.setTitle("Filtre (commun aux voix qui y passent)")
+        for widget in (self.filtre_type, self.filtre_coupure, self.filtre_resonance):
+            widget.blockSignals(True)
+        self.filtre_type.setCurrentText(filtre.type)
+        self.filtre_coupure.setValue(filtre.coupure)
+        self.filtre_resonance.setValue(filtre.resonance)
+        for widget in (self.filtre_type, self.filtre_coupure, self.filtre_resonance):
+            widget.blockSignals(False)
 
     def memoriser(self) -> None:
         self.historique.append(self.morceau.copie())
@@ -357,9 +421,10 @@ class Fenetre(QMainWindow):
         self._maj_titre(modifie=True)
 
     def _filtre_change(self, *_):
-        self.morceau.filtre_type = self.filtre_type.currentText()
-        self.morceau.filtre_coupure = self.filtre_coupure.value()
-        self.morceau.filtre_resonance = self.filtre_resonance.value()
+        filtre = self.morceau.filtres[self.voix // 3]
+        filtre.type = self.filtre_type.currentText()
+        filtre.coupure = self.filtre_coupure.value()
+        filtre.resonance = self.filtre_resonance.value()
         self.moteur.appliquer_filtre(self.morceau)
         self._maj_titre(modifie=True)
 
@@ -388,7 +453,7 @@ class Fenetre(QMainWindow):
         self.moteur.fermer()
         self.moteur = moteur.Moteur(puce)
         self.moteur.metronome = self.case_metronome.isChecked()
-        for voix in range(3):
+        for voix in range(len(self.morceau.pistes)):
             self.moteur.appliquer_instrument(self.morceau, voix)
         if audio:
             self.moteur.demarrer_audio()

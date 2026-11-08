@@ -91,14 +91,14 @@ def demi_ton_de_la_touche(evenement) -> int | None:
 
 
 def importer(chemin: Path) -> Morceau:
-    """Place les trois parties les plus fournies d'un MIDI sur les trois voix.
+    """Place les parties d'un MIDI sur les voix, avec autant de SID qu'il en faut (3 au plus).
 
     La batterie (canal 10) va sur la voix 3. Une voix du SID ne joue qu'une note à
     la fois : quand une partie en joue plusieurs, la plus aiguë l'emporte.
     """
     import mido
 
-    from .modele import PREREGLAGES
+    from .modele import MAX_SID, PREREGLAGES
 
     fichier = mido.MidiFile(str(chemin))
     par_temps = fichier.ticks_per_beat
@@ -123,17 +123,21 @@ def importer(chemin: Path) -> Morceau:
 
     morceau = Morceau(titre=Path(chemin).stem, tempo=round(tempo or 120.0, 2))
     batterie = parties.pop(9, None)
-    melodiques = sorted(parties.values(), key=len, reverse=True)[:3 if batterie is None else 2]
+    places = 3 * MAX_SID - (1 if batterie is not None else 0)
+    melodiques = sorted(parties.values(), key=len, reverse=True)[:places]
     melodiques.sort(key=lambda notes: sum(n.hauteur for n in notes) / len(notes))  # du grave à l'aigu
-    noms = ["Basse", "Nappe", "Mélodie"] if len(melodiques) == 3 else ["Basse", "Mélodie"]
-    for voix, notes in enumerate(melodiques):
+    total = len(melodiques) + (1 if batterie is not None else 0)
+    morceau.regler_nb_sid(-(-total // 3))
+    voix_libres = [v for v in range(len(morceau.pistes)) if not (batterie is not None and v == 2)]
+    for rang, (voix, notes) in enumerate(zip(voix_libres, melodiques)):
+        nom = "Basse" if rang == 0 else "Mélodie" if rang == len(melodiques) - 1 else "Nappe"
         morceau.pistes[voix].notes = notes
-        morceau.pistes[voix].instrument = PREREGLAGES[noms[voix]]()
+        morceau.pistes[voix].instrument = PREREGLAGES[nom]()
+    for voix in voix_libres[len(melodiques):]:
+        morceau.pistes[voix].notes = []
     if batterie is not None:
         morceau.pistes[2].notes = batterie
         morceau.pistes[2].instrument = PREREGLAGES["Batterie"]()
-    elif len(melodiques) < 3:
-        morceau.pistes[2].notes = []
     fin = max(n.debut + n.duree for p in morceau.pistes for n in p.notes)
     morceau.mesures = max(1, int(-(-fin // morceau.temps_par_mesure)))
     return morceau

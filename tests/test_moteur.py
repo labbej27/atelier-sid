@@ -57,7 +57,7 @@ def test_batterie_et_son_audible():
         emu.trame()
         son.append(emu.echantillons())
     son = np.concatenate(son)
-    assert son.size == 80 * 960
+    assert son.shape == (80 * 960, 2)
     assert np.abs(son).max() > 1000
 
 
@@ -107,8 +107,68 @@ def test_metronome_et_direct():
     mo.metronome = True
     mo.jouer(m, decompte=1)
     sons = [mo.generer_trame() for _ in range(100)]
-    assert all(s.size == 960 for s in sons)
+    assert all(s.shape == (960, 2) for s in sons)
     assert mo.position() > 0
     mo.note_directe(0, 60, m.pistes[0].instrument)
     son = np.concatenate([mo.generer_trame() for _ in range(5)])
     assert np.abs(son).max() > 0
+
+
+def test_deux_sid_voix_4_sur_le_second(tmp_path):
+    m = Morceau(tempo=150, mesures=1)
+    m.regler_nb_sid(2)
+    assert len(m.pistes) == 6 and len(m.filtres) == 2
+    m.pistes[3].notes = [Note(0, 2, 60)]
+    m.filtres[1].coupure = 1500
+    emu = moteur.C64Sid(nb_sid=2)
+    ecrits = {}
+    emu.memoire.subscribe_to_write(range(0xD400, 0xD460), lambda a, v: ecrits.__setitem__(a, v))
+    emu.charger(export.image(m))
+    for _ in range(5):
+        emu.trame()
+    f = moteur.frequence_sid(60)
+    assert (ecrits[0xD421] << 8 | ecrits[0xD420]) == f and ecrits[0xD424] & 1  # voix 4 = voix 1 du SID 2
+    assert ecrits[0xD416] == 1024 >> 3 and ecrits[0xD436] == 1500 >> 3  # un filtre par SID
+    assert ecrits[0xD438] & 15 == 15 and ecrits[0xD418] & 15 == 15
+    son = emu.echantillons()
+    assert son.shape == (960, 2) and abs(son[:, 1]).max() > abs(son[:, 0]).max()  # SID 2 à droite
+    export.ecrire_sid(m, tmp_path / "a.sid")
+    entete = (tmp_path / "a.sid").read_bytes()
+    assert struct.unpack(">H", entete[4:6])[0] == 3 and entete[0x7A] == 0x42 and entete[0x7B] == 0
+
+
+def test_trois_sid_psid_v4(tmp_path):
+    m = Morceau(titre="T", auteur="A", publie="2026 LABBEJ27")
+    m.regler_nb_sid(3)
+    m.pistes[8].notes = [Note(0, 1, 72)]
+    export.ecrire_sid(m, tmp_path / "a.sid")
+    d = (tmp_path / "a.sid").read_bytes()
+    assert struct.unpack(">H", d[4:6])[0] == 4 and d[0x7A] == 0x42 and d[0x7B] == 0x44
+    assert d[0x56:0x56 + 13] == b"2026 LABBEJ27"
+    export.ecrire_prg(m, tmp_path / "a.prg")
+    assert b"T\rA\r2026 LABBEJ27\r\rSID : $D400 $D420 $D440\0" in (tmp_path / "a.prg").read_bytes()
+    emu = moteur.C64Sid(nb_sid=3)
+    emu.charger(export.image(m))
+    ecrits = {}
+    emu.memoire.subscribe_to_write(range(0xD400, 0xD460), lambda a, v: ecrits.__setitem__(a, v))
+    for _ in range(3):
+        emu.trame()
+    assert (ecrits[0xD44F] << 8 | ecrits[0xD44E]) == moteur.frequence_sid(72)  # voix 9
+
+
+def test_ancien_fichier_un_filtre(tmp_path):
+    import json
+    m = Morceau()
+    d = m.vers_dict()
+    del d["filtres"]
+    d.update(version=1, filtre_type="passe-haut", filtre_coupure=300, filtre_resonance=9)
+    (tmp_path / "v1.asid").write_text(json.dumps(d))
+    relu = Morceau.ouvrir(tmp_path / "v1.asid")
+    assert relu.filtres[0].type == "passe-haut" and relu.filtres[0].coupure == 300 and relu.nb_sid == 1
+
+
+def test_reduire_les_sid():
+    m = Morceau()
+    m.regler_nb_sid(3)
+    m.regler_nb_sid(1)
+    assert len(m.pistes) == 3 and len(m.filtres) == 1

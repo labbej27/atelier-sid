@@ -8,7 +8,7 @@ import struct
 import unicodedata
 from pathlib import Path
 
-from .modele import FILTRES, SON_DE_LA_NOTE, Morceau, Piste
+from .modele import FILTRES, SON_DE_LA_NOTE, Filtre, Morceau, Piste
 
 ICI = Path(__file__).resolve().parent
 LECTEUR = (ICI / "bin" / "player.bin").read_bytes()
@@ -31,6 +31,7 @@ NOTE_MIN, NOTE_MAX = 12, 12 + 0x5F  # C0 à B7
 # Position des champs dans l'en-tête du lecteur
 FLUX = ETIQUETTES["flux"] - ADRESSE
 INSTR_VOIX = ETIQUETTES["instr_voix"] - ADRESSE
+NB_VOIX = ETIQUETTES["nbvoix"] - ADRESSE
 FILTRE = ETIQUETTES["filtre"] - ADRESSE
 INSTRUMENTS = ETIQUETTES["instruments"] - ADRESSE
 
@@ -94,12 +95,12 @@ def flux_piste(morceau: Morceau, piste: Piste, debut: float = 0.0, ignorer: bool
     return bytes(flux)
 
 
-def octets_filtre(morceau: Morceau) -> bytes:
-    coupure = max(0, min(2047, morceau.filtre_coupure))
+def octets_filtre(morceau: Morceau, filtre: Filtre) -> bytes:
+    coupure = max(0, min(2047, filtre.coupure))
     return bytes([
         coupure & 7, coupure >> 3,
-        (max(0, min(15, morceau.filtre_resonance)) << 4),
-        FILTRES[morceau.filtre_type] | (max(0, min(15, morceau.volume))),
+        (max(0, min(15, filtre.resonance)) << 4),
+        FILTRES[filtre.type] | (max(0, min(15, morceau.volume))),
     ])
 
 
@@ -109,12 +110,16 @@ def image(morceau: Morceau, debut: float = 0.0, ignorer: int | None = None) -> b
     `ignorer` : numéro d'une voix à laisser muette (celle qu'on enregistre).
     """
     lecteur = bytearray(LECTEUR)
-    for i, piste in enumerate(morceau.pistes[:3]):
+    nb_voix = 3 * morceau.nb_sid
+    pistes = morceau.pistes[:nb_voix]
+    for i, piste in enumerate(pistes):
         lecteur[INSTRUMENTS + 8 * i:INSTRUMENTS + 8 * i + 8] = piste.instrument.octets()
-    lecteur[INSTR_VOIX:INSTR_VOIX + 3] = bytes([0, 1, 2])
-    lecteur[FILTRE:FILTRE + 4] = octets_filtre(morceau)
+    lecteur[INSTR_VOIX:INSTR_VOIX + 9] = bytes(range(9))
+    lecteur[NB_VOIX] = nb_voix
+    for s, filtre in enumerate(morceau.filtres[:morceau.nb_sid]):
+        lecteur[FILTRE + 4 * s:FILTRE + 4 * s + 4] = octets_filtre(morceau, filtre)
 
-    flux = [flux_piste(morceau, p, debut, i == ignorer) for i, p in enumerate(morceau.pistes[:3])]
+    flux = [flux_piste(morceau, p, debut, i == ignorer) for i, p in enumerate(pistes)]
     adresse = ADRESSE + len(lecteur)
     for voix, donnees in enumerate(flux):
         struct.pack_into("<H", lecteur, FLUX + 2 * voix, adresse)
@@ -132,13 +137,19 @@ def texte_c64(texte: str, longueur: int | None = None) -> bytes:
 
 
 def ecrire_sid(morceau: Morceau, chemin: Path) -> None:
-    """PSID v2 : chargé en $1000, init et play lus dans les étiquettes du lecteur, PAL."""
+    """PSID chargé en $1000, PAL. Version 2 pour un SID, 3 pour deux ($D420), 4 pour trois ($D440)."""
     donnees = image(morceau)
+    nb = morceau.nb_sid
+    drapeaux = 0x04 | 0x30  # PAL ; 6581 ou 8580
+    if nb >= 2:
+        drapeaux |= 0xC0  # modèle du 2e SID : 6581 ou 8580
+    if nb >= 3:
+        drapeaux |= 0x300  # modèle du 3e SID
     entete = struct.pack(
         ">4sHHHHHHHI32s32s32sHBBBB",
-        b"PSID", 2, 0x7C, 0, ADRESSE, ADRESSE + 3, 1, 1, 0,
-        texte_c64(morceau.titre, 32), texte_c64(morceau.auteur, 32), texte_c64("Atelier SID", 32),
-        0x34, 0, 0, 0, 0,
+        b"PSID", 1 + nb if nb > 1 else 2, 0x7C, 0, ADRESSE, ADRESSE + 3, 1, 1, 0,
+        texte_c64(morceau.titre, 32), texte_c64(morceau.auteur, 32), texte_c64(morceau.publie, 32),
+        drapeaux, 0, 0, 0x42 if nb >= 2 else 0, 0x44 if nb >= 3 else 0,
     )
     Path(chemin).write_bytes(entete + struct.pack("<H", ADRESSE) + donnees)
 
@@ -146,8 +157,10 @@ def ecrire_sid(morceau: Morceau, chemin: Path) -> None:
 def ecrire_prg(morceau: Morceau, chemin: Path) -> None:
     donnees = image(morceau)
     titre = texte_c64(morceau.titre).upper()[:39]
-    auteur = texte_c64(morceau.auteur).upper()[:39]
-    debut = LANCEUR + titre + (b"\r" + auteur if auteur else b"") + b"\0"
+    lignes = [titre] + [texte_c64(t).upper()[:39] for t in (morceau.auteur, morceau.publie) if t.strip()]
+    if morceau.nb_sid > 1:
+        lignes += [b"", b"SID : $D400 $D420" + (b" $D440" if morceau.nb_sid > 2 else b"")]
+    debut = LANCEUR + b"\r".join(lignes) + b"\0"
     if ADRESSE_LANCEUR + len(debut) > ADRESSE:
         raise ErreurExport("Titre trop long.")
     remplissage = bytes(ADRESSE - ADRESSE_LANCEUR - len(debut))

@@ -19,7 +19,8 @@ REGLE = 22
 LIGNE = 13
 BORD = 6  # pixels près du bord droit d'une note : on la redimensionne
 
-COULEURS_VOIX = [QColor("#4fa3ff"), QColor("#ffb347"), QColor("#7ee081")]
+COULEURS_VOIX = [QColor(c) for c in ("#4fa3ff", "#ffb347", "#7ee081", "#c792ea", "#ff6f91", "#4dd0e1",
+                                      "#e6d36b", "#a1887f", "#90a4ae")]
 
 
 def nom_note(hauteur: int) -> str:

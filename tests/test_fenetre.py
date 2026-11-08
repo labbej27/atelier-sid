@@ -117,3 +117,18 @@ def test_import_midi(tmp_path):
     assert [n.hauteur for n in m.pistes[0].notes] == [36, 38]
     assert [n.hauteur for n in m.pistes[1].notes] == [72, 74, 76]
     assert m.pistes[2].instrument.batterie and len(m.pistes[2].notes) == 2
+
+
+def test_passer_a_deux_sid_et_infos(fen):
+    fen.nb_sid.setCurrentIndex(1)
+    fen._nb_sid_change(1)
+    assert len(fen.lignes) == 6 and fen.morceau.nb_sid == 2
+    fen.choisir_voix(4)
+    assert "SID 2" in fen.groupe_filtre.title()
+    fen.filtre_coupure.setValue(1800)
+    assert fen.morceau.filtres[1].coupure == 1800 and fen.morceau.filtres[0].coupure != 1800
+    fen.champs_infos["publie"].setText("2026 LABBEJ27")
+    fen._info_change("publie", "2026 LABBEJ27")
+    assert fen.morceau.publie == "2026 LABBEJ27" and fen.champs_infos["titre"].maxLength() == 32
+    fen.annuler()
+    assert fen.morceau.nb_sid == 1 and len(fen.lignes) == 3

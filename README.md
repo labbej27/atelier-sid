@@ -9,8 +9,14 @@ pour un vrai C64. Il s'inspire de DefleMask, en plus léger, avec un piano roll 
 
 ## Ce qu'il fait
 
-- **3 pistes = les 3 voix du SID.** Chacune a son instrument et joue une note à la fois, comme sur
-  le C64.
+- **Jusqu'à 9 voix** : une puce SID a 3 voix ; on peut en utiliser 2 ou 3 (« stéréo SID »), en
+  $D400, $D420 et $D440, soit 6 ou 9 voix. Chaque voix a son instrument et joue une note à la
+  fois ; chaque SID a son filtre. À l'écoute, le SID 1 est à gauche, le SID 2 à droite, le SID 3 au
+  centre. Pour le jouer sur un vrai C64, il faut ces puces à ces adresses : sur un C64 Ultimate,
+  réglages « SID Addressing » (puces dans les supports ou UltiSID).
+- **Titre, auteur, publié** (en haut à droite) : repris dans le `.sid`, 32 caractères au plus, sans
+  accents, et affichés sur l'écran du `.prg`. Pour « Publié », l'usage est l'année et le groupe,
+  par exemple « 2026 LABBEJ27 ».
 - **Enregistrement en direct** depuis un clavier MIDI ou le clavier de l'ordinateur, avec une mesure
   de décompte, un métronome et le calage sur la grille.
 - **Piano roll** pour corriger à la souris : ajouter, déplacer, allonger, supprimer ; annuler et
@@ -23,7 +29,8 @@ pour un vrai C64. Il s'inspire de DefleMask, en plus léger, avec un piano roll 
   dans un 6502 émulé ([py65](https://github.com/mnaberez/py65)), et le son vient de
   [reSIDfp](https://github.com/libsidplayfp/libsidplayfp), l'émulateur SID de VICE et de sidplayfp.
   On choisit la puce, 6581 ou 8580.
-- **Exports** : `.sid` (lecteur SID du C64 Ultimate, VICE, sidplay…), `.prg` qui se lance sur un C64
+- **Exports** : `.sid` (PSID version 2, 3 ou 4 selon le nombre de SID ; lecteur SID du C64
+  Ultimate, VICE, sidplay…), `.prg` qui se lance sur un C64
   PAL, et `.wav`. Import de fichiers `.mid`. Morceaux enregistrés au format `.asid` (JSON).
 
 ## Utilisation

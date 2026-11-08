@@ -1,4 +1,5 @@
-; Lecteur SID d'Atelier SID : 3 voix, appelé 50 fois par seconde (PAL).
+; Lecteur SID d'Atelier SID : jusqu'à 3 SID (9 voix), appelé 50 fois par seconde (PAL).
+; SID 1 en $D400, SID 2 en $D420, SID 3 en $D440.
 ; Chargé en $1000. Les flux des voix suivent le lecteur en mémoire ; leurs
 ; adresses, les instruments et le filtre sont écrits par atelier_sid/export.py
 ; dans l'en-tête ci-dessous.
@@ -26,20 +27,32 @@ PTR     = $FB           ; pointeur de lecture en page zéro, sauvé et restauré
         .segment "CODE"
         jmp init
         jmp play
-flux:       .word 0, 0, 0       ; $1006 adresses des trois flux
-instr_voix: .byte 0, 1, 2       ; $100C instrument de départ de chaque voix
-filtre:     .byte 0, $40, $00, $1F  ; $100F coupure basse, haute, résonance (bits 4-7), mode|volume
-instruments:                    ; $1013 huit instruments de 8 octets
-        .res 64, 0
+flux:       .res 18, 0          ; adresses des flux des 9 voix
+instr_voix: .byte 0, 1, 2, 3, 4, 5, 6, 7, 8  ; instrument de départ de chaque voix
+nbvoix:     .byte 3             ; 3, 6 ou 9 (un, deux ou trois SID)
+filtre:     .res 12, 0          ; par SID : coupure basse, haute, résonance (bits 4-7), mode|volume
+instruments:                    ; neuf instruments de 8 octets
+        .res 72, 0
 
 ; ---------------------------------------------------------------------------
-init:   ldx #$18
+init:   ldx #0                  ; efface les registres de chaque SID utilisé (X = 0, 3, 6)
+@efface_sid:
+        ldy sidbase,x
+        lda #$18
+        sta compte
         lda #0
 @efface:
-        sta SID,x
-        dex
+        sta SID,y
+        iny
+        dec compte
         bpl @efface
-        ldx #2
+        inx
+        inx
+        inx
+        cpx nbvoix
+        bcc @efface_sid
+        ldx nbvoix
+        dex
 @voix:  txa
         asl
         tay
@@ -56,12 +69,27 @@ init:   ldx #$18
         jsr charger_instr
         dex
         bpl @voix
-        lda filtre
-        sta SID+$15
-        lda filtre+1
-        sta SID+$16
-        lda filtre+3
-        sta SID+$18
+        ldx #0                  ; filtre et volume de chaque SID (X = 0, 3, 6)
+@filtre:
+        ldy filtre_de,x
+        lda filtre,y
+        sta tmp
+        lda filtre+1,y
+        sta tmp2
+        lda filtre+3,y
+        pha
+        ldy sidbase,x
+        lda tmp
+        sta SID+$15,y
+        lda tmp2
+        sta SID+$16,y
+        pla
+        sta SID+$18,y
+        inx
+        inx
+        inx
+        cpx nbvoix
+        bcc @filtre
         jmp routage
 
 ; --- Charge l'instrument A dans la voix X ---
@@ -96,17 +124,30 @@ charger_instr:
         ; la voix entre ou sort du filtre
 routage:
         stx sauvex
-        lda filtre+2
+        ldx #0                  ; X = première voix du SID : 0, 3, 6
+@sid:   stx premier
+        ldy filtre_de,x
+        lda filtre+2,y
         and #$F0
-        ldx #2
-@r:     ldy drapeaux,x
-        sty tmp
-        lsr tmp
+        sta tmp2
+        lda #3
+        sta compte
+@r:     lda drapeaux,x
+        lsr
         bcc :+
+        lda tmp2
         ora bitvoix,x
-:       dex
-        bpl @r
-        sta SID+$17
+        sta tmp2
+:       inx
+        dec compte
+        bne @r
+        ldy premier
+        lda sidbase,y
+        tay
+        lda tmp2
+        sta SID+$17,y
+        cpx nbvoix
+        bcc @sid
         ldx sauvex
         rts
 
@@ -119,7 +160,7 @@ play:   lda PTR
 @boucle:
         jsr voix
         inx
-        cpx #3
+        cpx nbvoix
         bne @boucle
         pla
         sta PTR+1
@@ -471,33 +512,35 @@ battfrq:  .byte $18,$0E,$09,$06,$04,  $1C,$30,$28,$20,$18,  $70,$70,$70,$70,$70,
 battonde: .byte $41,$41,$41,$41,$40,  $41,$81,$81,$81,$80,  $81,$80,$80,$80,$80,  $11,$11,$11,$11,$10
 
 vibforme: .byte $00, $01, $02, $01, $00, $81, $82, $81
-decal:    .byte 0, 7, 14
-bitvoix:  .byte 1, 2, 4
+decal:    .byte 0, 7, 14, $20, $27, $2E, $40, $47, $4E
+bitvoix:  .byte 1, 2, 4, 1, 2, 4, 1, 2, 4
+sidbase:  .byte 0, 0, 0, $20, 0, 0, $40     ; indexés par la première voix du SID (0, 3, 6)
+filtre_de: .byte 0, 0, 0, 4, 0, 0, 8
 
         .include "frequences.inc"
 
 ; Variables : dans l'image elle-même, car les flux sont placés juste après.
-ptrlo:      .res 3
-ptrhi:      .res 3
-minuterie:  .res 3
-mode:       .res 3      ; 0 silence, 1 note, 2 arpège, 3 batterie
-gachette:   .res 3
-onde:       .res 3
-pwlo:       .res 3
-pwhi:       .res 3
-pwv:        .res 3
-pwdir:      .res 3
-vib:        .res 3
-vibcpt:     .res 3
-vibpas:     .res 3
-drapeaux:   .res 3
-freqlo:     .res 3
-freqhi:     .res 3
-arpnb:      .res 3
-arpidx:     .res 3
-arpnotes:   .res 12
-typebatt:   .res 3
-trame:      .res 3
+ptrlo:      .res 9
+ptrhi:      .res 9
+minuterie:  .res 9
+mode:       .res 9      ; 0 silence, 1 note, 2 arpège, 3 batterie
+gachette:   .res 9
+onde:       .res 9
+pwlo:       .res 9
+pwhi:       .res 9
+pwv:        .res 9
+pwdir:      .res 9
+vib:        .res 9
+vibcpt:     .res 9
+vibpas:     .res 9
+drapeaux:   .res 9
+freqlo:     .res 9
+freqhi:     .res 9
+arpnb:      .res 9
+arpidx:     .res 9
+arpnotes:   .res 36
+typebatt:   .res 9
+trame:      .res 9
 reg:        .res 1
 tmp:        .res 1
 forme:      .res 1
@@ -507,3 +550,5 @@ compte:     .res 1
 cible:      .res 1
 sauvey:     .res 1
 sauvex:     .res 1
+tmp2:       .res 1
+premier:    .res 1
